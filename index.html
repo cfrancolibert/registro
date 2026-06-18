@@ -356,6 +356,10 @@ function AppWrapper() {
 }
 function App({ session }) {
   const [entries, setEntries] = useState([]);
+  const [deletedIds, setDeletedIds] = useState([]);
+  const [isDirty, setIsDirty] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("idle");
+  const [saveMsg, setSaveMsg] = useState("");
   const [food, setFood] = useState("");
   const [quickType, setQT] = useState(null);
   const [quickVal, setQV] = useState("");
@@ -365,28 +369,61 @@ function App({ session }) {
   const [archived, setArchived] = useState(loadArch);
   const foodRef = useRef(null);
   useEffect(() => {
-    db.from("entries").select("*").order("ts", { ascending: false }).then(({ data }) => {
-      if (data) setEntries(data);
+    db.from("entries").select("*").order("ts", { ascending: false }).then(({ data, error }) => {
+      if (error) {
+        setSaveMsg("Error al cargar: " + error.message);
+        setSaveStatus("error");
+      } else if (data) {
+        setEntries(data);
+        setIsDirty(false);
+      }
     });
   }, []);
+  const markDirty = () => setIsDirty(true);
   const addEntry = (type, value) => {
     const v = String(value).trim();
     if (!v) return;
-    const entry = { id: genId(), type, value: v, note: "", ts: Date.now() };
-    setEntries((prev) => [entry, ...prev]);
-    db.from("entries").insert(entry);
+    setEntries((prev) => [{ id: genId(), type, value: v, note: "", ts: Date.now() }, ...prev]);
+    markDirty();
   };
   const updateEntry = (id, fn) => {
-    setEntries((prev) => {
-      const next = prev.map((e) => e.id === id ? fn(e) : e);
-      const u = next.find((e) => e.id === id);
-      if (u) db.from("entries").update({ value: u.value, note: u.note || "", ts: u.ts }).eq("id", id);
-      return next;
-    });
+    setEntries((prev) => prev.map((e) => e.id === id ? fn(e) : e));
+    markDirty();
   };
   const removeEntry = (id) => {
     setEntries((prev) => prev.filter((e) => e.id !== id));
-    db.from("entries").delete().eq("id", id);
+    setDeletedIds((prev) => [...prev, id]);
+    markDirty();
+  };
+  const saveAll = async () => {
+    setSaveStatus("saving");
+    setSaveMsg("");
+    try {
+      if (deletedIds.length > 0) {
+        const { error } = await db.from("entries").delete().in("id", deletedIds);
+        if (error) throw error;
+      }
+      if (entries.length > 0) {
+        const rows = entries.map((e) => ({
+          id: e.id,
+          type: e.type,
+          value: e.value,
+          note: e.note || "",
+          ts: e.ts,
+          user_id: session.user.id
+        }));
+        const { error } = await db.from("entries").upsert(rows, { onConflict: "id" });
+        if (error) throw error;
+      }
+      setDeletedIds([]);
+      setIsDirty(false);
+      setSaveStatus("saved");
+      setSaveMsg("");
+      setTimeout(() => setSaveStatus("idle"), 2500);
+    } catch (err) {
+      setSaveStatus("error");
+      setSaveMsg(err.message);
+    }
   };
   const toggleArchive = () => setArchived((a) => {
     saveArch(!a);
@@ -451,7 +488,16 @@ function App({ session }) {
       cursor: "pointer"
     } }, label);
   };
-  return /* @__PURE__ */ React.createElement("div", { style: { minHeight: "100vh", width: "100%", background: "radial-gradient(120% 80% at 50% -10%, #eef0f5 0%, #f4f5f7 60%)", padding: "34px 20px 120px", display: "flex", justifyContent: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { width: "100%", maxWidth: 600 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 4px 20px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 14, height: 14, borderRadius: 4, background: "linear-gradient(135deg,#e16c10,#1c73c5)", display: "inline-block" } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 800, letterSpacing: "-0.03em" } }, "Registro")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, !showReport && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: "#8a8a96", fontVariantNumeric: "tabular-nums" } }, plural(visible.length, "registro", "registros")), /* @__PURE__ */ React.createElement("button", { onClick: () => setView((v) => v === "report" ? "log" : "report"), style: {
+  const saveBtnStyle = () => {
+    if (saveStatus === "saving") return { bg: "#6c6c79", color: "#fff", border: "#6c6c79", cursor: "default" };
+    if (saveStatus === "saved") return { bg: "#06915f", color: "#fff", border: "#06915f", cursor: "default" };
+    if (saveStatus === "error") return { bg: "#e5484d", color: "#fff", border: "#e5484d", cursor: "pointer" };
+    if (isDirty) return { bg: "#1c73c5", color: "#fff", border: "#1c73c5", cursor: "pointer" };
+    return { bg: "#fff", color: "#6c6c79", border: "#dcdce3", cursor: "default" };
+  };
+  const sbs = saveBtnStyle();
+  const saveBtnLabel = saveStatus === "saving" ? "Guardando\u2026" : saveStatus === "saved" ? "\u2713 Guardado" : saveStatus === "error" ? "Error \u2014 reintentar" : isDirty ? "Guardar" : "Guardado";
+  return /* @__PURE__ */ React.createElement("div", { style: { minHeight: "100vh", width: "100%", background: "radial-gradient(120% 80% at 50% -10%, #eef0f5 0%, #f4f5f7 60%)", padding: "34px 20px 120px", display: "flex", justifyContent: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { width: "100%", maxWidth: 600 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 4px 20px" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 14, height: 14, borderRadius: 4, background: "linear-gradient(135deg,#e16c10,#1c73c5)", display: "inline-block" } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 20, fontWeight: 800, letterSpacing: "-0.03em" } }, "Registro")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, !showReport && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13, color: "#8a8a96", fontVariantNumeric: "tabular-nums" } }, plural(visible.length, "registro", "registros")), /* @__PURE__ */ React.createElement("button", { onClick: () => setView((v) => v === "report" ? "log" : "report"), style: {
     border: "1px solid " + (showReport ? "#1a1a24" : "#dcdce3"),
     background: showReport ? "#1a1a24" : "#fff",
     color: showReport ? "#fff" : "#4a4a57",
@@ -464,12 +510,31 @@ function App({ session }) {
   } }, showReport ? "\u2190 Registro" : "Reporte"), /* @__PURE__ */ React.createElement(
     "button",
     {
+      onClick: isDirty || saveStatus === "error" ? saveAll : void 0,
+      disabled: saveStatus === "saving",
+      style: {
+        border: "1px solid " + sbs.border,
+        background: sbs.bg,
+        color: sbs.color,
+        fontFamily: "inherit",
+        fontSize: 13,
+        fontWeight: 700,
+        padding: "6px 14px",
+        borderRadius: 999,
+        cursor: sbs.cursor,
+        transition: "background .2s, border-color .2s, color .2s"
+      }
+    },
+    saveBtnLabel
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
       onClick: () => db.auth.signOut(),
       title: session.user.email,
       style: { border: "1px solid #dcdce3", background: "#fff", color: "#6c6c79", fontFamily: "inherit", fontSize: 13, fontWeight: 600, padding: "6px 12px", borderRadius: 999, cursor: "pointer" }
     },
     "Salir"
-  ))), !showReport && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", border: "1px solid #e7e8ee", borderRadius: 18, boxShadow: "0 4px 20px rgba(25,25,50,0.05)", padding: "20px 22px", marginBottom: 22 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: "50%", flex: "none", background: FOOD_COLOR } }), /* @__PURE__ */ React.createElement(
+  ))), saveStatus === "error" && saveMsg && /* @__PURE__ */ React.createElement("div", { style: { background: "#fff5f5", border: "1px solid #fecaca", borderRadius: 12, padding: "10px 16px", marginBottom: 16, fontSize: 13, color: "#e5484d" } }, "No se pudo guardar: ", saveMsg), !showReport && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", border: "1px solid #e7e8ee", borderRadius: 18, boxShadow: "0 4px 20px rgba(25,25,50,0.05)", padding: "20px 22px", marginBottom: 22 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 9, height: 9, borderRadius: "50%", flex: "none", background: FOOD_COLOR } }), /* @__PURE__ */ React.createElement(
     "input",
     {
       ref: foodRef,
